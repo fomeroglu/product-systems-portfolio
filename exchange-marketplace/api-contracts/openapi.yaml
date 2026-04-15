@@ -1,25 +1,22 @@
 openapi: 3.0.3
 
 info:
-  title: Exchange Marketplace API
+  title: Logistics Platform API
   description: |
-    API for a logistics capacity marketplace that decouples Space (warehouse capacity) 
-    from Freight (physical units in transit) into two distinct asset classes.
+    API for a B2B SaaS platform built around decoupled asset classes,
+    programmable trust, and event-driven payment eligibility.
 
     **Core design principles:**
     - Immutable event log — scan events are never updated or deleted
     - Hard-fail validation — geofence violations are rejected, never silently accepted
     - Idempotency by default — all write endpoints are retry-safe
 
-    **Payment model:** Payment eligibility is computed from verifiable scan events 
-    (PickedUpByConsignee / FacilityCheckOut) — not from manual approval. 
-    This is the "smart contract" trust model of the platform.
+    **Payment model:** Payment eligibility is computed from verifiable scan events
+    — not from manual approval. This is the programmable trust model of the platform.
   version: 1.0.0
-  contact:
-    name: Exchange Marketplace API
 
 servers:
-  - url: https://api.exchange.io/v1
+  - url: https://api.platform.io/v1
     description: Production
 
 security:
@@ -32,8 +29,8 @@ components:
       scheme: bearer
       description: |
         API key scoped by role.
-        - driver: scan event write only
-        - operator: scan events + eligibility read
+        - operator: scan event write only
+        - supervisor: scan events + eligibility read
         - admin: full access
 
   schemas:
@@ -52,36 +49,31 @@ components:
       properties:
         handling_unit_id:
           type: integer
-          description: FK → HANDLING_UNITS.id
           example: 1042
         event_type_code:
           type: string
-          description: FK → SCAN_EVENT_TYPES.code. Must exist in reference table.
+          description: Must exist in SCAN_EVENT_TYPES reference table.
           example: PickedUpAtOrigin
         occurred_at_utc:
           type: string
           format: date-time
-          description: When the physical event happened. ISO 8601 UTC.
           example: "2026-04-13T14:30:00Z"
         zone_id:
           type: integer
-          description: FK → ZONES.id. Which zone this scan is recorded at.
           example: 7
         lat:
           type: number
           format: float
           description: |
-            Submitting party GPS latitude. Validated against zone geofence 
+            Operator GPS latitude. Validated against zone geofence
             using Haversine formula. Rejected with 422 if outside radius.
           example: 29.7601
         lng:
           type: number
           format: float
-          description: Submitting party GPS longitude.
           example: -95.3701
         user_id:
           type: integer
-          description: Who performed the scan.
           example: 88
         idempotency_key:
           type: string
@@ -122,7 +114,7 @@ components:
           type: boolean
           description: |
             True if this was the first scan event on this handling unit.
-            First scan triggers materialization — the unit transitions 
+            First scan triggers materialization — the unit transitions
             from a paper record to a physically verified entity.
           example: true
 
@@ -142,21 +134,18 @@ components:
           example: Houston South Terminal
         zip5:
           type: string
-          description: 5-digit ZIP always visible on the blind board.
           example: "77002"
         address:
           type: string
           nullable: true
           description: |
-            Physical address. Always null until a transaction is confirmed.
-            Blind board rule: supplier address is withheld to protect 
-            supplier confidentiality during the discovery phase.
+            Always null until a transaction is confirmed.
+            Supplier address is withheld to protect confidentiality
+            during the discovery phase.
           example: null
         qty_available:
           type: integer
-          description: |
-            Pool capacity remaining. Not seat-assigned — 
-            represents units available from one pool (Southwest Airlines model).
+          description: Pool capacity remaining. Not seat-assigned.
           example: 14
         price_cents:
           type: integer
@@ -191,7 +180,7 @@ components:
         eligible:
           type: boolean
           description: |
-            Computed projection — not a stored value. Derived in real time 
+            Computed projection — not a stored value. Derived in real time
             from the scan event log. Always consistent with actual event records.
           example: true
         units:
@@ -209,13 +198,10 @@ components:
               payment_trigger_event:
                 type: string
                 nullable: true
-                description: The scan event that triggered payment eligibility for this unit.
                 example: PickedUpByConsignee
         blocking_conditions:
           type: array
-          description: |
-            Empty array when eligible. When not eligible, lists every 
-            condition blocking payment finalization.
+          description: Empty when eligible. Lists every condition blocking payment when not eligible.
           items:
             type: object
             properties:
@@ -259,14 +245,9 @@ components:
               example: -95.3698
             distance_m:
               type: number
-              description: Actual distance from zone center in meters.
               example: 2140
             allowed_radius_m:
               type: number
-              description: |
-                Configured geofence radius for this zone. 
-                Configurable per zone — urban facilities may require wider radius 
-                to account for GPS drift in dense environments.
               example: 200
 
 paths:
@@ -283,7 +264,7 @@ paths:
         3. Validate handling_unit_id exists in HANDLING_UNITS
         4. Geofence validation — GPS must fall within zone radius (Haversine formula)
         5. Idempotency check — reject if duplicate (handling_unit_id + event_type_code + occurred_at_utc)
-        6. Insert SCAN_EVENTS row + update HANDLING_UNITS.status + trigger materialization if first scan
+        6. Insert row + update status + trigger materialization if first scan
 
         **Geofence runs before idempotency.** You cannot retry past a location failure.
       operationId: createScanEvent
@@ -312,45 +293,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: MISSING_PARAMETER
-                message: "handling_unit_id is required"
         '401':
           description: Missing or invalid API key
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: INVALID_API_KEY
-                message: "API key missing or invalid"
         '403':
           description: Valid key but insufficient scope
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: INSUFFICIENT_SCOPE
-                message: "This key does not have scan event write access"
         '404':
           description: handling_unit_id or zone_id not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: RESOURCE_NOT_FOUND
-                message: "handling_unit_id 1042 not found"
         '409':
           description: event_type_code not in SCAN_EVENT_TYPES reference table
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: INVALID_EVENT_TYPE
-                message: "Event type 'ArrivedAtMoon' does not exist in SCAN_EVENT_TYPES"
         '422':
           description: GPS coordinates outside zone geofence boundary
           content:
@@ -363,10 +329,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: SERVER_ERROR
-                message: "An unexpected error occurred"
-                request_id: "req_xyz789"
 
   /capacity-tokens:
     get:
@@ -374,9 +336,9 @@ paths:
       description: |
         Returns available capacity tokens for the open blind board.
 
-        **Blind board rule:** zone name and ZIP are always returned. 
-        Physical address is always null until a transaction is confirmed. 
-        This is enforced at the API response layer — not just the UI.
+        **Blind board rule:** zone name and ZIP are always returned.
+        Physical address is always null until a transaction is confirmed.
+        Enforced at the API response layer — not just the UI.
       operationId: listCapacityTokens
       parameters:
         - name: zip5
@@ -384,7 +346,6 @@ paths:
           required: true
           schema:
             type: string
-          description: 5-digit ZIP code to search near
           example: "77002"
         - name: context_type
           in: query
@@ -392,27 +353,23 @@ paths:
           schema:
             type: string
             enum: [MOVING, STATIONARY]
-          description: Filter by capacity type
         - name: available_from
           in: query
           required: false
           schema:
             type: string
             format: date
-          description: Filter tokens available from this date
         - name: available_to
           in: query
           required: false
           schema:
             type: string
             format: date
-          description: Filter tokens available until this date
         - name: cursor
           in: query
           required: false
           schema:
             type: string
-          description: Pagination cursor from previous response
         - name: limit
           in: query
           required: false
@@ -420,7 +377,6 @@ paths:
             type: integer
             default: 20
             maximum: 100
-          description: Results per page
       responses:
         '200':
           description: Available capacity tokens
@@ -438,22 +394,16 @@ paths:
                     properties:
                       cursor:
                         type: string
-                        example: cur_xyz456
                       has_more:
                         type: boolean
-                        example: true
                       total_count:
                         type: integer
-                        example: 47
         '400':
           description: Missing required parameters
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: MISSING_PARAMETER
-                message: "zip5 is required"
         '401':
           description: Missing or invalid API key
           content:
@@ -466,25 +416,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: NO_RESULTS
-                message: "No available capacity tokens found for ZIP 77002"
 
   /handling-unit-groups/{id}/eligibility:
     get:
       summary: Check payment eligibility for a handling unit group
       description: |
-        Computes payment eligibility for a handling unit group in real time.
-
-        **This is a projection, not a stored value.** Eligibility is derived 
-        from the scan event log on every request — never cached or stored directly. 
-        This guarantees consistency even if events are added retroactively 
-        (dispute resolution, late sync from offline devices).
+        Computes payment eligibility in real time from the scan event log.
+        Never cached or stored — always consistent with actual event records.
 
         **A group is eligible when ALL are true:**
         - All units have status DELIVERED or EXCEPTION (written off)
-        - No unit has an open (unresolved) EXCEPTION status
-        - At least one PickedUpByConsignee or FacilityCheckOut scan event exists
+        - No unit has an open unresolved EXCEPTION
+        - At least one payment trigger scan event exists
 
         A single open exception blocks the entire group's payment finalization.
       operationId: getGroupEligibility
@@ -494,7 +437,6 @@ paths:
           required: true
           schema:
             type: integer
-          description: HANDLING_UNIT_GROUPS.id
           example: 204
       responses:
         '200':
@@ -515,15 +457,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: ACCESS_DENIED
-                message: "Your organization does not have access to group 204"
         '404':
           description: Group not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error_code: GROUP_NOT_FOUND
-                message: "Handling unit group 204 not found"

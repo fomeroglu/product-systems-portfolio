@@ -1,4 +1,4 @@
-# Exchange Marketplace — API Contract v1
+# Logistics Platform — API Contract v1
 
 **Version:** 1.0.0  
 **Status:** v1 Reference Implementation  
@@ -8,18 +8,18 @@
 
 ## Design Philosophy
 
-This API is **contract-first** — the spec was written before any implementation. Every endpoint is designed from the consumer's perspective: what does the driver app need? What does the operator dashboard need? What does the payment system need?
+This API is **contract-first** — the spec was written before any implementation. Every endpoint is designed from the consumer's perspective: what does the field operator app need? What does the dashboard need? What does the payment system need?
 
 Three design principles govern every endpoint:
 
 **1. Immutability over updates**  
-Scan events are never updated or deleted. The append-only event log is the source of truth. Projections (like `HandlingUnit.status`) are derived from events — never directly mutated via API.
+Scan events are never updated or deleted. The append-only event log is the source of truth. Projections (like unit status) are derived from events — never directly mutated via API.
 
 **2. Hard-fail over silent degradation**  
 If a scan event's GPS coordinates fall outside the zone geofence, the request is rejected with `422`. The system never silently accepts bad data and corrects it later. Trust is built on verified physical presence, not on assumed proximity.
 
 **3. Idempotency by default**  
-Every write endpoint is idempotent. Retry-safe by design. A driver who loses connectivity mid-scan and retries will never create duplicate records.
+Every write endpoint is idempotent. Retry-safe by design. An operator who loses connectivity mid-scan and retries will never create duplicate records.
 
 ---
 
@@ -32,8 +32,8 @@ Authorization: Bearer <api_key>
 ```
 
 API keys are scoped by role:
-- `driver` — can submit scan events only
-- `operator` — can submit scan events + read eligibility
+- `operator` — can submit scan events only
+- `supervisor` — can submit scan events + read eligibility
 - `admin` — full access
 
 A valid key with insufficient scope returns `403 Forbidden`.
@@ -43,7 +43,7 @@ A valid key with insufficient scope returns `403 Forbidden`.
 ## Base URL
 
 ```
-https://api.exchange.io/v1
+https://api.platform.io/v1
 ```
 
 ---
@@ -99,9 +99,9 @@ Content-Type: application/json
 | `handling_unit_id` | integer | ✅ | FK → HANDLING_UNITS.id |
 | `event_type_code` | string | ✅ | FK → SCAN_EVENT_TYPES.code |
 | `occurred_at_utc` | ISO 8601 | ✅ | When the physical event happened |
-| `zone_id` | integer | ✅ | FK → ZONES.id — which zone this scan is at |
-| `lat` | float | ✅ | Driver GPS latitude |
-| `lng` | float | ✅ | Driver GPS longitude |
+| `zone_id` | integer | ✅ | FK → ZONES.id |
+| `lat` | float | ✅ | Operator GPS latitude |
+| `lng` | float | ✅ | Operator GPS longitude |
 | `user_id` | integer | ✅ | Who performed the scan |
 | `idempotency_key` | string | ✅ | Unique key to make retries safe |
 
@@ -124,8 +124,6 @@ Content-Type: application/json
 
 #### Idempotent Retry — `200 OK`
 
-If the same `idempotency_key` is submitted again, the original response is returned. No new row is created.
-
 ```json
 {
   "scan_event_id": 5509,
@@ -136,27 +134,27 @@ If the same `idempotency_key` is submitted again, the original response is retur
 
 #### Error Responses
 
-**`401 Unauthorized`** — missing or invalid API key
+**`401 Unauthorized`**
 ```json
 { "error_code": "INVALID_API_KEY", "message": "API key missing or invalid" }
 ```
 
-**`403 Forbidden`** — valid key, insufficient scope
+**`403 Forbidden`**
 ```json
 { "error_code": "INSUFFICIENT_SCOPE", "message": "This key does not have scan event write access" }
 ```
 
-**`404 Not Found`** — handling_unit_id or zone_id does not exist
+**`404 Not Found`**
 ```json
 { "error_code": "RESOURCE_NOT_FOUND", "message": "handling_unit_id 1042 not found" }
 ```
 
-**`409 Conflict`** — event_type_code not valid
+**`409 Conflict`**
 ```json
-{ "error_code": "INVALID_EVENT_TYPE", "message": "Event type 'ArrivedAtMoon' does not exist in SCAN_EVENT_TYPES" }
+{ "error_code": "INVALID_EVENT_TYPE", "message": "Event type 'InvalidCode' does not exist in SCAN_EVENT_TYPES" }
 ```
 
-**`422 Unprocessable — OUTSIDE_GEOFENCE`** — GPS coordinates outside zone boundary
+**`422 Unprocessable — OUTSIDE_GEOFENCE`**
 ```json
 {
   "error_code": "OUTSIDE_GEOFENCE",
@@ -170,7 +168,7 @@ If the same `idempotency_key` is submitted again, the original response is retur
 }
 ```
 
-The `distance_m` vs `allowed_radius_m` breakdown is intentional — it gives the driver app enough information to surface a useful error message ("You are 2.1km from the zone — move closer and retry") without exposing the zone's exact address.
+The `distance_m` vs `allowed_radius_m` breakdown gives the client enough information to surface a useful error ("You are 2.1km from the zone") without exposing the zone's exact address.
 
 **`500 Internal Server Error`**
 ```json
@@ -228,16 +226,16 @@ Authorization: Bearer <api_key>
 }
 ```
 
-`address: null` is deliberate — the physical address is withheld until the buyer confirms a transaction. This is the blind board rule enforced at the API response layer, not just the UI layer.
+`address: null` is deliberate — the physical address is withheld until a transaction is confirmed. Enforced at the API response layer, not just the UI.
 
 #### Error Responses
 
-**`400 Bad Request`** — missing required parameters
+**`400 Bad Request`**
 ```json
 { "error_code": "MISSING_PARAMETER", "message": "zip5 is required" }
 ```
 
-**`404 Not Found`** — no available tokens match the query
+**`404 Not Found`**
 ```json
 { "error_code": "NO_RESULTS", "message": "No available capacity tokens found for ZIP 77002" }
 ```
@@ -248,15 +246,15 @@ Authorization: Bearer <api_key>
 
 Computes payment eligibility for a handling unit group.
 
-**This is a projection, not a stored value.** Eligibility is computed in real time by querying the scan event log. It is never stored directly — it is always derived from facts. This means eligibility is always consistent with the actual event record, and can be recomputed if business rules change.
+**This is a projection, not a stored value.** Eligibility is computed in real time by querying the scan event log — never stored directly. Always consistent with the actual event record.
 
 #### Payment Eligibility Rules
 
-A group is eligible for payment when ALL of the following are true:
+A group is eligible when ALL of the following are true:
 
-1. All `HandlingUnits` in the group have status `DELIVERED` or `EXCEPTION (written off)`
-2. No `HandlingUnit` has an open (unresolved) `EXCEPTION` status
-3. The group has at least one `PickedUpByConsignee` or `FacilityCheckOut` scan event
+1. All handling units in the group have status `DELIVERED` or `EXCEPTION (written off)`
+2. No unit has an open (unresolved) `EXCEPTION` status
+3. At least one payment trigger scan event exists (`PickedUpByConsignee` or `FacilityCheckOut`)
 
 A single open exception blocks the entire group's payment finalization.
 
@@ -276,8 +274,7 @@ Authorization: Bearer <api_key>
   "eligible": true,
   "units": [
     { "id": 1042, "status": "DELIVERED", "payment_trigger_event": "PickedUpByConsignee" },
-    { "id": 1043, "status": "DELIVERED", "payment_trigger_event": "PickedUpByConsignee" },
-    { "id": 1044, "status": "DELIVERED", "payment_trigger_event": "PickedUpByConsignee" }
+    { "id": 1043, "status": "DELIVERED", "payment_trigger_event": "PickedUpByConsignee" }
   ],
   "blocking_conditions": []
 }
@@ -299,7 +296,7 @@ Authorization: Bearer <api_key>
     {
       "unit_id": 1046,
       "reason": "OPEN_EXCEPTION",
-      "message": "Unit 1046 has an unresolved exception. Payment is held until the exception is resolved or written off."
+      "message": "Unit 1046 has an unresolved exception. Payment is held until resolved or written off."
     }
   ]
 }
@@ -312,7 +309,7 @@ Authorization: Bearer <api_key>
 { "error_code": "GROUP_NOT_FOUND", "message": "Handling unit group 204 not found" }
 ```
 
-**`403 Forbidden`** — caller does not have access to this group
+**`403 Forbidden`**
 ```json
 { "error_code": "ACCESS_DENIED", "message": "Your organization does not have access to group 204" }
 ```
@@ -321,22 +318,17 @@ Authorization: Bearer <api_key>
 
 ## Idempotency — How It Works
 
-Idempotency keys protect against duplicate records caused by network retries. The pattern:
-
 1. Client generates a unique `idempotency_key` before sending the request
 2. Server checks if it has seen this key before
 3. If yes: return the original response, do not process again
 4. If no: process normally, store the key + response
 
-**For scan events**, the recommended idempotency key format is:
+**Recommended key format:**
 ```
 {handling_unit_id}-{event_type_code}-{occurred_at_utc}
 ```
 
-This is a composite key rather than a client-generated UUID because scanning devices in low-connectivity logistics environments may not have reliable random number generation. The composite key is deterministic — the same physical event always produces the same key.
-
-**Why this matters in practice:**  
-A driver scans a package at a loading dock. The request is sent. The truck hits a dead zone — no response received. The app retries. Without idempotency, two scan events are created for the same physical moment. With idempotency, the second request returns the first response silently. The event log stays clean.
+Composite key preferred over UUID — devices in low-connectivity environments may not have reliable random number generation. The composite key is deterministic — the same physical event always produces the same key.
 
 ---
 
@@ -349,36 +341,10 @@ A driver scans a package at a loading dock. The request is sent. The truck hits 
 | `ACCESS_DENIED` | 403 | Org does not own this resource |
 | `RESOURCE_NOT_FOUND` | 404 | Entity ID does not exist |
 | `NO_RESULTS` | 404 | Query returned no matches |
-| `INVALID_EVENT_TYPE` | 409 | event_type_code not in SCAN_EVENT_TYPES |
+| `INVALID_EVENT_TYPE` | 409 | event_type_code not in reference table |
 | `OUTSIDE_GEOFENCE` | 422 | GPS outside zone boundary |
 | `MISSING_PARAMETER` | 400 | Required field absent |
 | `SERVER_ERROR` | 500 | Unexpected server failure |
-
----
-
-## Event Type Reference
-
-### Moving Capacity Events
-
-| Code | Custody After | Materializes | Payment Trigger |
-|---|---|---|---|
-| `PickedUpAtOrigin` | Driver | Yes (if first) | No |
-| `DroppedOffAtOriginGateway` | Gateway Operator | Yes (if first) | No |
-| `ArrivedAtOriginGateway` | Gateway Operator | Yes (if first) | No |
-| `DispatchedFromOriginGateway` | Driver | Yes (if first) | No |
-| `ArrivedAtDestinationGateway` | Gateway Operator | Yes (if first) | No |
-| `StagedForPickup` | Gateway Operator | Yes (if first) | No |
-| `PickedUpByConsignee` | Consignee | Yes (if first) | ✅ Yes |
-| `Exception` | Unchanged | Yes (if first) | Holds unit |
-
-### Stationary Capacity Events
-
-| Code | Custody After | Materializes | Payment Trigger |
-|---|---|---|---|
-| `FacilityCheckIn` | Warehouse | Yes | No |
-| `Staged` | Warehouse | No | No |
-| `Exception` | Unchanged | No | Holds unit |
-| `FacilityCheckOut` | Released | No | ✅ Yes |
 
 ---
 
@@ -386,26 +352,26 @@ A driver scans a package at a loading dock. The request is sent. The truck hits 
 
 ### Why is eligibility computed, not stored?
 
-Storing `eligible: true/false` on `HANDLING_UNIT_GROUPS` creates two sources of truth. If a scan event is added retroactively (dispute resolution, late sync from an offline device), the stored flag becomes stale. Computing from the event log means eligibility is always consistent with the actual record — no reconciliation job needed.
+Storing `eligible: true/false` creates two sources of truth. If a scan event is added retroactively, the stored flag becomes stale. Computing from the event log means eligibility is always consistent with the actual record — no reconciliation job needed.
 
-Tradeoff: slightly more expensive to compute. Mitigated by indexing on `handling_unit_id` in `SCAN_EVENTS`.
+*Tradeoff:* slightly more expensive to compute. Mitigated by indexing on `handling_unit_id` in the scan events table.
 
 ### Why is address hidden until transaction confirmed?
 
-Supplier confidentiality is a core marketplace trust requirement. Suppliers will not list capacity if buyers can extract location data without completing a transaction. The blind board design — zone name visible, address hidden — was the minimum viable trust model for supplier participation.
+Supplier confidentiality is a core marketplace trust requirement. Suppliers will not list capacity if buyers can extract location data without completing a transaction. The blind board design was the minimum viable trust model for supplier participation.
 
-Tradeoff: reduces search precision for buyers. Mitigated by ZIP-level search which is precise enough for logistics planning.
+*Tradeoff:* reduces search precision for buyers. Mitigated by ZIP-level search which is precise enough for operational planning.
 
-### Why is geofence validation a hard fail (not a warning)?
+### Why is geofence validation a hard fail?
 
-A warning model — "you're outside the zone, are you sure?" — transfers trust enforcement to the UI layer. Any bad actor with API access can bypass the warning. A hard fail at the API layer means scan events are guaranteed to represent verified physical presence, regardless of which client submits them.
+A warning model transfers trust enforcement to the UI layer — any client with API access can bypass it. A hard fail at the API layer means scan events are guaranteed to represent verified physical presence, regardless of which client submits them.
 
-Tradeoff: legitimate edge cases (geofence radius too tight, GPS drift in urban canyons) generate false rejections. Mitigated by configurable `geofence_radius_m` per zone — operators can widen the radius for urban facilities.
+*Tradeoff:* legitimate edge cases (GPS drift in urban areas) generate false rejections. Mitigated by configurable `geofence_radius_m` per zone.
 
-### Why is `ScanEventType` a reference table, not a database enum?
+### Why is ScanEventType a reference table, not a database enum?
 
-Adding a new event type to a database enum requires a schema migration — downtime, deployment risk, coordination with engineering. A reference table requires only a new row insert — zero downtime, deployable by an operator. When `CustomsClearance` or `ColdChainBreached` is needed in v2, it's one SQL insert.
+Adding a new event type to a database enum requires a schema migration — downtime and deployment risk. A reference table requires only a new row insert — zero downtime. New event types can be added by an operator without engineering involvement.
 
 ---
 
-*This contract is a reference implementation demonstrating PM-level API design thinking applied to a logistics capacity marketplace. Field names, status enums, and business rules reflect a real domain model. No proprietary data or company-specific information is included.*
+*This contract is a reference implementation demonstrating PM-level API design thinking applied to a B2B SaaS platform. No proprietary data or company-specific information is included.*
