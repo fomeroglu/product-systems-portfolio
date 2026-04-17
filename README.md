@@ -46,7 +46,7 @@ Leading zero-to-one product creation from concept to pilot. Defined MVP scope, d
 
 ---
 
-### [Agentic Development (TBA)](./warehouse-module/)
+### [Agentic Development (TBA)](./agentic-development/)
 **Directing AI agent execution via product charter and milestone scoping — active build**
 
 Exploring a new PM workflow: product charter as goal vector, milestone-scoped agent execution, and PM-layer decision making on tradeoffs the agent can't resolve. Artifacts will be published as the build progresses.
